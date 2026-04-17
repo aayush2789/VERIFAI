@@ -1,0 +1,21 @@
+.env
+/.venv
+__pycache__/
+*.py[cod]
+
+# Optional: cache from other tools
+*.pyo
+*.pyd
+
+logs/
+
+/output
+venv
+agents/radiologist/CheXpert_Dataset
+.env
+
+.radgraph
+/uploads
+medsiglip_full_model.pt
+/images
+*.csv
