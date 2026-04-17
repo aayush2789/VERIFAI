@@ -25,6 +25,8 @@ VERIFAI orchestrates **nine specialized AI agents** through a LangGraph state ma
 - [Key Features](#key-features)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
+- [Hardware Specification (Sizing Guide)](#hardware-specification-sizing-guide)
+- [How VERIFAI Is Optimized](#how-verifai-is-optimized)
 - [Installation](#installation)
 - [Environment Configuration](#environment-configuration)
 - [Running the System](#running-the-system)
@@ -281,6 +283,63 @@ VERIFAI/
 - [Hugging Face](https://huggingface.co/settings/tokens) — Token for gated models (`google/medgemma-1.5-4b-it`, `google/medsiglip-448`)
 - [NCBI](https://www.ncbi.nlm.nih.gov/account/settings/) — API key for PubMed access (recommended)
 - (Optional) [Supabase](https://supabase.com) — For cloud database logging
+
+---
+
+## Hardware Specification (Sizing Guide)
+
+Use this as a practical sizing guide for different usage modes.
+
+| Workload | GPU | CPU | RAM | Disk | Notes |
+|----------|-----|-----|-----|------|-------|
+| **Smoke test / wiring check** (`MOCK_MODELS=True`) | None | 4+ cores | 8-16 GB | 10+ GB | Fastest way to validate API + workflow wiring without downloading model weights. |
+| **Local inference (single user)** | 1x NVIDIA GPU with **24 GB VRAM** (RTX 4090 / RTX 3090 / L4) | 8+ cores | 32 GB | 30+ GB SSD | Enough for full 9-agent flow with shared model loading. |
+| **Team demo / repeated runs** | 1x NVIDIA GPU with **40-48 GB VRAM** (A100 40G / L40S / RTX 6000 Ada) | 12+ cores | 64 GB | 80+ GB NVMe SSD | Better headroom for concurrent workflows, larger caches, and lower latency spikes. |
+| **Production-like deployment** | 1x A100 80G (or equivalent) | 16+ cores | 64-128 GB | 150+ GB NVMe SSD | Recommended for stable multi-session serving and observability. |
+| **Optional fine-tuning (QLoRA script)** | 1x 24-48 GB VRAM (depends on batch/sequence config) | 16+ cores | 64+ GB | 200+ GB NVMe SSD | Training is optional and separate from normal inference runtime. |
+
+### Hardware Notes
+
+- GPU is the primary bottleneck. If VRAM is limited, keep `ENABLE_LLM_CRITIC=False` and run one workflow at a time.
+- NVMe SSD significantly improves startup/retrieval responsiveness vs HDD/SATA SSD.
+- For Windows hosts, prefer running the stack inside WSL2 + CUDA for best compatibility with Linux-first ML dependencies.
+
+---
+
+## How VERIFAI Is Optimized
+
+VERIFAI uses several concrete runtime optimizations to keep memory use and latency manageable:
+
+1. **Shared MedGemma singleton across agents**
+  Historian, Literature, and LLM Critic reuse one shared MedGemma instance via a thread-safe loader, avoiding duplicate model copies in VRAM.
+
+2. **Mixed precision for inference**
+  Models are loaded in `bfloat16`/`float16` on CUDA where supported, reducing memory pressure and improving throughput compared with `float32`.
+
+3. **Low-memory model loading path**
+  MedGemma uses `low_cpu_mem_usage=True` during loading to reduce CPU RAM spikes during initialization.
+
+4. **Parallel evidence gathering**
+  Historian (FHIR) and Literature (PubMed/Europe PMC) run in parallel when `USE_PARALLEL_AGENTS=True`, lowering end-to-end workflow time.
+
+5. **Hybrid retrieval stack (DuckDB + FAISS)**
+  Structured filtering is done in DuckDB, semantic similarity ranking is done in FAISS, and indexes are prebuilt to avoid recomputing embeddings during runtime.
+
+6. **Inference-only execution paths**
+  Core inference code uses no-grad/inference-mode patterns to avoid autograd overhead and unnecessary memory allocations.
+
+7. **Feature flags for performance control**
+  Runtime switches allow trading quality vs speed/resource use:
+  - `MOCK_MODELS=True`: no GPU/model download path
+  - `ENABLE_LLM_CRITIC=False`: skip extra semantic critic pass
+  - `USE_PARALLEL_AGENTS=True`: parallel evidence retrieval
+  - `DEBATE_MAX_ROUNDS`: cap debate iterations
+
+### Quick Tuning Tips
+
+- On 24 GB GPUs, keep `ENABLE_LLM_CRITIC=False` for stable memory headroom.
+- If latency matters more than recall, reduce `DEBATE_MAX_ROUNDS` from `3` to `1-2`.
+- Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to reduce CUDA allocator fragmentation in long sessions.
 
 ---
 

@@ -34,9 +34,7 @@ RELEVANT_RESOURCES = {
     "Encounter"
 }
 
-# ==========================
 # HELPERS
-# ==========================
 
 def safe_timestamp(ts: str | None):
     if not ts:
@@ -146,9 +144,7 @@ def normalize_resource(resource: dict):
         "raw_json": json.dumps(resource)
     }
 
-# ==========================
 # MAIN
-# ==========================
 
 def main():
     logger.info("Starting FHIR extraction...")
