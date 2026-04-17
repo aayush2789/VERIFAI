@@ -13,7 +13,7 @@
 
 ![VERIFAI Thumbnail](assets/thumbnail.png)
 
-VERIFAI orchestrates **nine specialized AI agents** through a LangGraph state machine to analyze chest X-rays, cross-reference patient history and medical literature, debate diagnostic uncertainty, and produce auditable diagnoses — all runnable on a **single A100 / 24 GB+ GPU**.
+VERIFAI orchestrates **nine specialized AI agents** through a LangGraph state machine to analyze chest X-rays, cross-reference patient history and medical literature, debate diagnostic uncertainty, and produce auditable diagnoses — runnable on a **single consumer GPU (~12 GB+ VRAM)** with shared model loading.
 
 ---
 
@@ -25,8 +25,7 @@ VERIFAI orchestrates **nine specialized AI agents** through a LangGraph state ma
 - [Key Features](#key-features)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
-- [Hardware Specification (Sizing Guide)](#hardware-specification-sizing-guide)
-- [How VERIFAI Is Optimized](#how-verifai-is-optimized)
+- [Hardware Requirements](#hardware-requirements)
 - [Installation](#installation)
 - [Environment Configuration](#environment-configuration)
 - [Running the System](#running-the-system)
@@ -170,7 +169,7 @@ The uncertainty history is streamed live to the frontend and rendered as an SVG 
 - **LRP Heatmaps** — Transformer explainability via Chefer et al. (CVPR 2021) Layer-wise Relevance Propagation for MedSigLIP
 - **Observability Dashboard** — Prometheus-style metrics (latency, confidence, safety scores, per-agent duration)
 - **Evidence Report Generator** — HTML reports with citations, heatmaps, and full audit trail
-- **Shared Model Loader** — Historian, Literature, and Critic share a single thread-safe MedGemma 4B instance (~9 GB VRAM total vs ~27 GB otherwise)
+- **Shared Model Loader** — Historian, Literature, and Critic share a single thread-safe MedGemma 4B instance (~10-11 GB VRAM total vs ~27 GB with separate model copies)
 
 ---
 
@@ -273,7 +272,7 @@ VERIFAI/
 |-------------|---------|-------------|
 | **Python** | 3.10 | 3.10 |
 | **CUDA** | 12.1 | 12.6 |
-| **GPU VRAM** | 24 GB | 80 GB (A100) |
+| **GPU VRAM** | 12 GB | 16-24 GB |
 | **RAM** | 32 GB | 64 GB |
 | **Disk** | 30 GB | 60 GB |
 | **Node.js** | 18 | 20+ |
@@ -286,60 +285,37 @@ VERIFAI/
 
 ---
 
-## Hardware Specification (Sizing Guide)
+## Hardware Requirements
 
-Use this as a practical sizing guide for different usage modes.
+For full inference with real models, VERIFAI is designed to run on a single GPU with about **10-11 GB VRAM** usage for the MedGemma path.
 
-| Workload | GPU | CPU | RAM | Disk | Notes |
-|----------|-----|-----|-----|------|-------|
-| **Smoke test / wiring check** (`MOCK_MODELS=True`) | None | 4+ cores | 8-16 GB | 10+ GB | Fastest way to validate API + workflow wiring without downloading model weights. |
-| **Local inference (single user)** | 1x NVIDIA GPU with **24 GB VRAM** (RTX 4090 / RTX 3090 / L4) | 8+ cores | 32 GB | 30+ GB SSD | Enough for full 9-agent flow with shared model loading. |
-| **Team demo / repeated runs** | 1x NVIDIA GPU with **40-48 GB VRAM** (A100 40G / L40S / RTX 6000 Ada) | 12+ cores | 64 GB | 80+ GB NVMe SSD | Better headroom for concurrent workflows, larger caches, and lower latency spikes. |
-| **Production-like deployment** | 1x A100 80G (or equivalent) | 16+ cores | 64-128 GB | 150+ GB NVMe SSD | Recommended for stable multi-session serving and observability. |
-| **Optional fine-tuning (QLoRA script)** | 1x 24-48 GB VRAM (depends on batch/sequence config) | 16+ cores | 64+ GB | 200+ GB NVMe SSD | Training is optional and separate from normal inference runtime. |
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| **GPU VRAM (inference)** | 12 GB | 16 GB+ |
+| **CPU** | 8 cores | 12+ cores |
+| **RAM** | 32 GB | 64 GB |
+| **Disk** | 30 GB SSD | 80+ GB NVMe SSD |
+| **CUDA** | 12.1 | 12.6 |
 
-### Hardware Notes
+### How we achieve this VRAM footprint
 
-- GPU is the primary bottleneck. If VRAM is limited, keep `ENABLE_LLM_CRITIC=False` and run one workflow at a time.
-- NVMe SSD significantly improves startup/retrieval responsiveness vs HDD/SATA SSD.
-- For Windows hosts, prefer running the stack inside WSL2 + CUDA for best compatibility with Linux-first ML dependencies.
+1. **Shared model loader (main reason)**
+   Historian, Literature, and LLM Critic share one MedGemma instance instead of loading separate copies. This keeps total MedGemma VRAM around 10-11 GB instead of roughly 3x that amount.
 
----
+2. **Mixed precision inference**
+   The model runs in `bfloat16` or `float16` on CUDA, reducing memory compared with `float32`.
 
-## How VERIFAI Is Optimized
+3. **Inference-only execution**
+   No-grad/inference-mode execution avoids autograd graph allocation and lowers peak memory.
 
-VERIFAI uses several concrete runtime optimizations to keep memory use and latency manageable:
+4. **Optional memory-saving runtime flags**
+   - `ENABLE_LLM_CRITIC=False` to skip extra critic inference on smaller GPUs.
+   - `MOCK_MODELS=True` for CPU-only pipeline wiring tests (no model VRAM needed).
 
-1. **Shared MedGemma singleton across agents**
-  Historian, Literature, and LLM Critic reuse one shared MedGemma instance via a thread-safe loader, avoiding duplicate model copies in VRAM.
+### Practical note
 
-2. **Mixed precision for inference**
-  Models are loaded in `bfloat16`/`float16` on CUDA where supported, reducing memory pressure and improving throughput compared with `float32`.
-
-3. **Low-memory model loading path**
-  MedGemma uses `low_cpu_mem_usage=True` during loading to reduce CPU RAM spikes during initialization.
-
-4. **Parallel evidence gathering**
-  Historian (FHIR) and Literature (PubMed/Europe PMC) run in parallel when `USE_PARALLEL_AGENTS=True`, lowering end-to-end workflow time.
-
-5. **Hybrid retrieval stack (DuckDB + FAISS)**
-  Structured filtering is done in DuckDB, semantic similarity ranking is done in FAISS, and indexes are prebuilt to avoid recomputing embeddings during runtime.
-
-6. **Inference-only execution paths**
-  Core inference code uses no-grad/inference-mode patterns to avoid autograd overhead and unnecessary memory allocations.
-
-7. **Feature flags for performance control**
-  Runtime switches allow trading quality vs speed/resource use:
-  - `MOCK_MODELS=True`: no GPU/model download path
-  - `ENABLE_LLM_CRITIC=False`: skip extra semantic critic pass
-  - `USE_PARALLEL_AGENTS=True`: parallel evidence retrieval
-  - `DEBATE_MAX_ROUNDS`: cap debate iterations
-
-### Quick Tuning Tips
-
-- On 24 GB GPUs, keep `ENABLE_LLM_CRITIC=False` for stable memory headroom.
-- If latency matters more than recall, reduce `DEBATE_MAX_ROUNDS` from `3` to `1-2`.
-- Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to reduce CUDA allocator fragmentation in long sessions.
+- On 12 GB GPUs, run one workflow at a time for the most stable experience.
+- For Windows hosts, WSL2 + CUDA is typically the most reliable setup for Linux-first ML dependencies.
 
 ---
 
